@@ -12,9 +12,8 @@ import uuid
 (
     SELECTING_ACTION, SELECTING_TOPIC, SELECTING_SUBTOPIC, 
     TYPING_TITLE, TYPING_CONTENT, UPLOADING_IMAGE, UPLOADING_FILE, 
-    TYPING_CAPTION, EDITING_MATERIAL, DELETING_MATERIAL, 
-    ADDING_TOPIC, ADDING_SUBTOPIC, INTELLIGENT_SYSTEM, SHOWING_INSTRUCTIONS
-) = range(14)
+    TYPING_CAPTION, ADDING_TOPIC, ADDING_SUBTOPIC, INTELLIGENT_SYSTEM, SHOWING_INSTRUCTIONS
+) = range(12)
 
 # Получаем список тем из базы знаний
 topics = kb.get_topics()
@@ -66,8 +65,7 @@ def create_subtopic_keyboard(topic):
 # Клавиатура для управления материалами
 manage_keyboard = [
     ["Добавить текст", "Добавить изображение", "Загрузить файл"],
-    ["Добавить раздел", "Добавить подраздел", "Редактировать материал"],
-    ["Удалить материал", "Назад к разделам"]
+    ["Добавить раздел", "Добавить подраздел", "Назад к разделам"]
 ]
 manage_markup = ReplyKeyboardMarkup(manage_keyboard, resize_keyboard=True)
 # Клавиатура только с отменой для интеллектуального режима
@@ -124,16 +122,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['action'] = 'add_subtopic'
         return SELECTING_TOPIC
     
-    elif text == "Редактировать материал":
-        await update.message.reply_text("Выбери раздел для редактирования:", reply_markup=current_markup)
-        context.user_data['action'] = 'edit'
-        return SELECTING_TOPIC
-    
-    elif text == "Удалить материал":
-        await update.message.reply_text("Выбери раздел для удаления материала:", reply_markup=current_markup)
-        context.user_data['action'] = 'delete'
-        return SELECTING_TOPIC
-    
     elif text == "Поиск":
         await update.message.reply_text("Напиши 'Поиск [запрос]' для поиска информации. Например: 'Поиск Waterfall'")
         return SELECTING_ACTION
@@ -159,14 +147,81 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SELECTING_ACTION
     
     elif text.lower().startswith("поиск "):
-        query = text[6:]
+        query = text[6:].strip()
         if query:
-            result = kb.search(query)
-            await update.message.reply_text(result[:4000])
+            # Нормализуем запрос для сравнения
+            normalized_query = query.lower().replace(' ', '_')
+            found_exact_match = False
+            
+            # Сначала ищем точное совпадение с подразделом
+            for topic in topics:
+                subtopics = kb.get_subtopics(topic)
+                # Исключаем служебный файл _description
+                subtopics = [subtopic for subtopic in subtopics if subtopic != '_description']
+                
+                for subtopic in subtopics:
+                    # Нормализуем название подраздела для сравнения
+                    normalized_subtopic = subtopic.lower().replace(' ', '_')
+                    
+                    if normalized_query == normalized_subtopic:
+                        # Нашли точное совпадение - показываем инструкцию
+                        found_exact_match = True
+                        content = kb.get_content(topic, subtopic)
+                        
+                        # Отправляем текст
+                        await update.message.reply_text(content["text"])
+                        
+                        # Отправляем изображения, если они есть
+                        for image_info in content["images"]:
+                            try:
+                                with open(image_info["path"], 'rb') as photo:
+                                    caption = f"{image_info['caption']}\n\nID: {image_info['id']}"
+                                    await update.message.reply_photo(photo=photo, caption=caption)
+                            except FileNotFoundError:
+                                await update.message.reply_text(f"Изображение не найдено: {image_info['path']}")
+                        
+                        # Отправляем файлы, если они есть
+                        for file_info in content["files"]:
+                            try:
+                                with open(file_info["path"], 'rb') as file:
+                                    caption = f"{file_info['caption']}\n\nID: {file_info['id']}"
+                                    await update.message.reply_document(document=file, caption=caption)
+                            except FileNotFoundError:
+                                await update.message.reply_text(f"Файл не найден: {file_info['path']}")
+                        
+                        break
+                
+                if found_exact_match:
+                    break
+            
+            # Если не нашли точное совпадение, ищем по ключевым словам
+            if not found_exact_match:
+                results = []
+                for topic in topics:
+                    subtopics = kb.get_subtopics(topic)
+                    # Исключаем служебный файл _description
+                    subtopics = [subtopic for subtopic in subtopics if subtopic != '_description']
+                    
+                    for subtopic in subtopics:
+                        # Нормализуем название подраздела для поиска
+                        normalized_subtopic = subtopic.lower().replace(' ', '_')
+                        
+                        # Ищем вхождение слов запроса в названии подраздела
+                        query_words = normalized_query.split('_')
+                        found = any(word in normalized_subtopic for word in query_words if len(word) > 2)
+                        
+                        if found:
+                            results.append(f"{topic} -> {subtopic}")
+                
+                if results:
+                    response = "Найдены подразделы по ключевым словам:\n\n" + "\n".join(results)
+                    await update.message.reply_text(response[:4000])
+                else:
+                    await update.message.reply_text("Ничего не найдено по подразделам")
         else:
             await update.message.reply_text("Напиши запрос для поиска после команды 'Поиск'")
         return SELECTING_ACTION
-    
+        
     # Проверяем, является ли сообщение одним из разделов
     elif text in topics:
         # Показываем описание раздела и его подразделы
@@ -196,6 +251,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если команда не распознана
     await update.message.reply_text("Не понимаю команду. Выбери раздел из меню или используй 'Поиск'.")
     return SELECTING_ACTION
+
 async def show_instructions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик для показа инструкций из подраздела"""
     global current_markup
@@ -343,7 +399,7 @@ async def handle_intelligent_system(update: Update, context: ContextTypes.DEFAUL
                     context.user_data['instructions_subtopic'] = subtopic_name
                     
                     # Добавляем предложение посмотреть инструкцию
-                    final_answer += f"\nРекомендую ознакомиться с инструкцией по настройке: '{subtopic_name}'"
+                    final_answer += f"\nРекомендую ознакомиться с инструкции по настройке: '{subtopic_name}'"
             
             # Устанавливаем клавиатуру с предложением посмотреть инструкцию
             if 'instructions_topic' in context.user_data:
@@ -366,7 +422,6 @@ async def handle_intelligent_system(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("Пожалуйста, ответьте 'Да' или 'Нет'.", reply_markup=yes_no_markup)
         return INTELLIGENT_SYSTEM
 
-    
 async def handle_subtopic_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик выбора подраздела"""
     global current_markup
@@ -382,7 +437,7 @@ async def handle_subtopic_selection(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("Выбери раздел:", reply_markup=current_markup)
         return SELECTING_ACTION
     
-    # Проверяем, есть ли текущий раздел в контексте
+    # Проверяем, есть ли текущий раздел в контекста
     if 'current_topic' not in context.user_data:
         current_markup = create_main_keyboard()
         await update.message.reply_text("Сессия устарела. Выбери раздел заново:", reply_markup=current_markup)
@@ -474,7 +529,7 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subtopics = kb.get_subtopics(text)
         subtopics = [subtopic for subtopic in subtopics if subtopic != '_description']
         if not subtopics:
-            await update.message.reply_text("В этом разделе нет подразделов. Сначала добавь подраздел.")
+            await update.message.reply_text("В этом раздее нет подразделов. Сначала добавь подраздел.")
             return SELECTING_ACTION
         
         current_markup = create_subtopic_keyboard(text)
@@ -498,32 +553,6 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'add_subtopic':
         await update.message.reply_text("Введите название нового подраздела:")
         return ADDING_SUBTOPIC
-    
-    elif action == 'edit':
-        # Переходим к выбору подраздела
-        subtopics = kb.get_subtopics(text)
-        subtopics = [subtopic for subtopic in subtopics if subtopic != '_description']
-        if not subtopics:
-            await update.message.reply_text("В этом разделе нет подразделов. Сначала добавь подраздел.")
-            return SELECTING_ACTION
-        
-        current_markup = create_subtopic_keyboard(text)
-        await update.message.reply_text("Выбери подраздел для редактирования:", reply_markup=current_markup)
-        context.user_data['current_topic'] = text
-        return SELECTING_SUBTOPIC
-    
-    elif action == 'delete':
-        # Переходим к выбору подраздела
-        subtopics = kb.get_subtopics(text)
-        subtopics = [subtopic for subtopic in subtopics if subtopic != '_description']
-        if not subtopics:
-            await update.message.reply_text("В этом разделе нет подразделов. Сначала добавь подраздел.")
-            return SELECTING_ACTION
-        
-        current_markup = create_subtopic_keyboard(text)
-        await update.message.reply_text("Выбери подраздел для удаления материала:", reply_markup=current_markup)
-        context.user_data['current_topic'] = text
-        return SELECTING_SUBTOPIC
     
     return SELECTING_ACTION
 
@@ -567,32 +596,6 @@ async def select_subtopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'upload_file':
         await update.message.reply_text("Загрузи файл:")
         return UPLOADING_FILE
-    
-    elif action == 'edit':
-        # Формируем ключ подраздела
-        topic_key = f"{topic}/{matching_subtopic}"
-        materials = kb.get_images_for_topic(topic_key) + kb.get_files_for_topic(topic_key)
-        
-        if not materials:
-            await update.message.reply_text("В этом подразделе нет материалов для редактирования.")
-            return SELECTING_ACTION
-        
-        materials_list = "\n".join([f"ID: {m['id']} - {m['caption']}" for m in materials])
-        await update.message.reply_text(f"Материалы в подразделе '{matching_subtopic}':\n\n{materials_list}\n\nВведи ID материала для редактирования:")
-        return EDITING_MATERIAL
-    
-    elif action == 'delete':
-        # Формируем ключ подраздела
-        topic_key = f"{topic}/{matching_subtopic}"
-        materials = kb.get_images_for_topic(topic_key) + kb.get_files_for_topic(topic_key)
-        
-        if not materials:
-            await update.message.reply_text("В этом подразделе нет материалов для удаления.")
-            return SELECTING_ACTION
-        
-        materials_list = "\n".join([f"ID: {m['id']} - {m['caption']}" for m in materials])
-        await update.message.reply_text(f"Материалы в подразделе '{matching_subtopic}':\n\n{materials_list}\n\nВведи ID материала для удаления:")
-        return DELETING_MATERIAL
     
     return SELECTING_ACTION
 
@@ -777,147 +780,6 @@ async def add_file_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return SELECTING_ACTION
 
-async def edit_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование материала"""
-    material_id = update.message.text
-    
-    # Определяем раздел и подраздел
-    topic = context.user_data.get('topic')
-    subtopic = context.user_data.get('subtopic')
-    
-    # Формируем ключ подраздела
-    topic_key = f"{topic}/{subtopic}"
-    
-    # Ищем материал среди изображений и файлов
-    material = kb.get_material(topic_key, material_id, "image") or kb.get_material(topic_key, material_id, "file")
-    
-    if not material:
-        await update.message.reply_text("Материал с таким ID не найден. Попробуй еще раз:")
-        return EDITING_MATERIAL
-    
-    context.user_data['material_id'] = material_id
-    context.user_data['material_type'] = "image" if "type" not in material or material["type"] == "image" else "file"
-    context.user_data['topic_key'] = topic_key
-    
-    # Показываем текущий материал
-    if context.user_data['material_type'] == "image":
-        with open(material['path'], 'rb') as photo:
-            await update.message.reply_photo(
-                photo=photo, 
-                caption=f"Текущий материал: {material['caption']}\n\nВведи новое описание или отправь новое изображение:"
-            )
-    else:
-        with open(material['path'], 'rb') as file:
-            await update.message.reply_document(
-                document=file, 
-                caption=f"Текущий материал: {material['caption']}\n\nВведи новое описание или отправь новый файл:"
-            )
-    
-    return TYPING_CAPTION
-
-async def update_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновление материала"""
-    material_id = context.user_data['material_id']
-    topic_key = context.user_data['topic_key']
-    material_type = context.user_data['material_type']
-    
-    if update.message.photo and material_type == "image":
-        # Пользователь отправил новое изображение
-        photo = update.message.photo[-1]
-        file = await photo.get_file()
-        file_data = await file.download_as_bytearray()
-        
-        # Сохраняем новое изображение
-        filename = f"{topic_key.replace('/', '_')}_{uuid.uuid4().hex[:8]}.jpg"
-        new_file_path = kb.save_uploaded_file(file_data, filename, "image")
-        
-        # Обновляем материал
-        success = kb.update_material(
-            topic_key, 
-            material_id, 
-            new_file_path=new_file_path,
-            material_type=material_type
-        )
-        
-        if success:
-            await update.message.reply_text("Изображение материала успешно обновлено!")
-        else:
-            await update.message.reply_text("Ошибка при обновлении изображения.")
-    
-    elif update.message.document and material_type == "file":
-        # Пользователь отправил новый файл
-        document = update.message.document
-        file = await document.get_file()
-        file_data = await file.download_as_bytearray()
-        
-        # Сохраняем новый файл
-        filename = document.file_name or f"{topic_key.replace('/', '_')}_{uuid.uuid4().hex[:8]}"
-        new_file_path = kb.save_uploaded_file(file_data, filename, "file")
-        
-        # Обновляем материал
-        success = kb.update_material(
-            topic_key, 
-            material_id, 
-            new_file_path=new_file_path,
-            material_type=material_type
-        )
-        
-        if success:
-            await update.message.reply_text("Файл материала успешно обновлен!")
-        else:
-            await update.message.reply_text("Ошибка при обновлении файла.")
-    
-    else:
-        # Пользователь ввел новое описание
-        new_caption = update.message.text
-        
-        # Обновляем материал
-        success = kb.update_material(
-            topic_key, 
-            material_id, 
-            new_caption=new_caption,
-            material_type=material_type
-        )
-        
-        if success:
-            await update.message.reply_text("Описание материала успешно обновлено!")
-        else:
-            await update.message.reply_text("Ошибка при обновлении описания.")
-    
-    # Очищаем данные пользователя
-    context.user_data.clear()
-    
-    return SELECTING_ACTION
-
-async def delete_material(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаление материала"""
-    material_id = update.message.text
-    
-    # Определяем раздел и подраздел
-    topic = context.user_data.get('topic')
-    subtopic = context.user_data.get('subtopic')
-    
-    # Формируем ключ подраздела
-    topic_key = f"{topic}/{subtopic}"
-    
-    # Пытаемся удалить материал как изображение
-    success = kb.delete_material(topic_key, material_id, "image")
-    
-    # Если не нашли как изображение, пробуем как файл
-    if not success:
-        success = kb.delete_material(topic_key, material_id, "file")
-    
-    if success:
-        await update.message.reply_text(f"Материал успешно удален из подраздела '{subtopic}'!")
-    else:
-        await update.message.reply_text("Материал с таким ID не найден. Попробуй еще раз:")
-        return DELETING_MATERIAL
-    
-    # Очищаем данные пользователя
-    context.user_data.clear()
-    
-    return SELECTING_ACTION
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена текущей операции"""
     global current_markup
@@ -935,7 +797,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - Выполнить поиск по материалам
 - Добавлять новые разделы и подразделы
 - Добавлять новые материалы (текст, изображения и файлы) в подразделы
-- Редактировать и удалять материалы
 
 Для управления материалами нажми "Управление материалами"
     """
@@ -988,21 +849,11 @@ def main():
             ],
             TYPING_CAPTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_file_caption),
-                MessageHandler(filters.PHOTO, update_material),
-                MessageHandler(filters.Document.ALL, update_material),
-                CommandHandler('cancel', cancel)
-            ],
-            EDITING_MATERIAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_material),
-                CommandHandler('cancel', cancel)
-            ],
-            DELETING_MATERIAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, delete_material),
                 CommandHandler('cancel', cancel)
             ],
             SHOWING_INSTRUCTIONS: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, show_instructions),
-            CommandHandler('cancel', cancel)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, show_instructions),
+                CommandHandler('cancel', cancel)
             ],
             INTELLIGENT_SYSTEM: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_intelligent_system),
